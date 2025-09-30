@@ -1,6 +1,8 @@
 import random
 import difflib
 import matplotlib.pyplot as plt
+import json
+import urllib.request, urllib.parse
 
 import movie_storage_sql as storage  # persistence layer (SQLAlchemy)
 
@@ -163,20 +165,59 @@ def sort_by_year():
 
 
 def add_movie():
-    movies = storage.list_movies()
+    title_input = input_nonempty_string(f"   {COLOR_INPUT}Enter movie title: {COLOR_RESET}")
 
-    title = input_nonempty_string(f"   {COLOR_INPUT}Enter movie title: {COLOR_RESET}")
-    if title in movies:
-        print(f"   {COLOR_ERROR}Movie {title} already exists!{COLOR_RESET}")
-        return
-
-    rating = input_float(f"   {COLOR_INPUT}Enter rating (0-10): {COLOR_RESET}", 0, 10)
-    year = input_int(f"   {COLOR_INPUT}Enter year of release: {COLOR_RESET}", 1878, 2100)
+    # Fetch from OMDb
+    api_key = "8496f341"
+    query = urllib.parse.urlencode({"t": title_input, "apikey": api_key})
+    url = f"http://www.omdbapi.com/?{query}"
 
     try:
-        storage.add_movie(title, year, rating)
-        print(f"   {COLOR_OUTPUT}Movie {title} successfully added{COLOR_RESET}")
-    except ValueError as e:
+        with urllib.request.urlopen(url) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"   {COLOR_ERROR}Failed to reach OMDb: {e}{COLOR_RESET}")
+        return
+
+    if data.get("Response") != "True":
+        print(f"   {COLOR_ERROR}OMDb error: {data.get('Error', 'Unknown error')}{COLOR_RESET}")
+        return
+
+    # Parse fields
+    title = data.get("Title") or title_input
+
+    year_str = data.get("Year", "")
+    year = None
+    if year_str and year_str[:4].isdigit():  # handles ranges like "1999–2003"
+        year = int(year_str[:4])
+
+    rating = None
+    rating_str = data.get("imdbRating")
+    if rating_str and rating_str != "N/A":
+        try:
+            rating = float(rating_str)
+        except ValueError:
+            rating = None
+
+    poster_url = data.get("Poster") if data.get("Poster") not in (None, "N/A") else None
+
+    if year is None or rating is None:
+        print(f"   {COLOR_ERROR}Could not parse year/rating from OMDb for '{title}'.{COLOR_RESET}")
+        return
+
+    # Prevent obvious duplicates by title (optional UX nicety)
+    existing = storage.list_movies()
+    if title in existing:
+        print(f"   {COLOR_ERROR}Movie '{title}' already exists in your database.{COLOR_RESET}")
+        return
+
+    # Save to DB
+    try:
+        storage.add_movie(title, year, rating, poster_url)
+        print(f"   {COLOR_OUTPUT}Movie '{title}' ({year}) added with rating {rating:.1f}.{COLOR_RESET}")
+        if poster_url:
+            print(f"   {COLOR_OUTPUT}Poster: {poster_url}{COLOR_RESET}")
+    except Exception as e:
         print(f"   {COLOR_ERROR}{e}{COLOR_RESET}")
 
 
@@ -403,32 +444,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-def update_movie(title, rating=None, year=None):
-    """Update a movie's rating and/or year in the database."""
-    if rating is None and year is None:
-        print("No updates provided.")
-        return
-    set_parts = []
-    params = {"title": title}
-    if rating is not None:
-        set_parts.append("rating = :rating")
-        params["rating"] = rating
-    if year is not None:
-        set_parts.append("year = :year")
-        params["year"] = year
-    set_clause = ", ".join(set_parts)
-    with engine.connect() as connection:
-        result = connection.execute(
-            text(f"UPDATE movies SET {set_clause} WHERE title = :title"),
-            params
-        )
-        connection.commit()
-        if result.rowcount == 0:
-            print(f"No movie found with title '{title}'.")
-        else:
-            changed = []
-            if rating is not None:
-                changed.append(f"rating to {rating}")
-            if year is not None:
-                changed.append(f"year to {year}")
-            print(f"Movie '{title}' updated: " + ", ".join(changed) + ".")
