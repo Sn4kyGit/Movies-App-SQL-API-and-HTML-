@@ -3,6 +3,7 @@ from __future__ import annotations
 """
 CLI Movie App with user profiles, OMDb integration, SQLite/SQLAlchemy storage,
 and static website generation per user.
+Update feature: adds/edits a free-text NOTE per movie.
 """
 
 from pathlib import Path
@@ -21,11 +22,9 @@ import matplotlib.pyplot as plt
 
 import movie_storage_sql as storage  # persistence layer (SQLAlchemy)
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Constants & Settings
 # ──────────────────────────────────────────────────────────────────────────────
-
 APP_TITLE = "My Movies Database"
 PAGE_TITLE = "My Movie App"
 
@@ -33,32 +32,27 @@ OMDB_API_KEY = "8496f341"
 OMDB_TIMEOUT_SEC = 8
 OMDB_BASE_URL = "http://www.omdbapi.com/"
 
-# Styling (ANSI escape codes)
+# Console colors
 COLOR_RESET = "\033[0m"
-COLOR_ERROR = "\033[91m"     # red
-COLOR_MENU = "\033[92m"      # green  - menu options
-COLOR_INPUT = "\033[0m"      # default
-COLOR_OUTPUT = "\033[33m"    # yellow  - normal output
-COLOR_HEADER = "\033[96m"    # cyan    - headers / box titles
+COLOR_ERROR = "\033[91m"   # red
+COLOR_MENU = "\033[92m"    # green  - menu options
+COLOR_INPUT = "\033[0m"    # default
+COLOR_OUTPUT = "\033[33m"  # yellow  - normal output
+COLOR_HEADER = "\033[96m"  # cyan    - headers
 
-# Active user state (set in choose_user)
+# Active user (set via choose_user)
 ACTIVE_USER: Optional[Dict[str, object]] = None  # {"id": int, "name": str}
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# UI Basics
+# UI
 # ──────────────────────────────────────────────────────────────────────────────
-
 def print_title() -> None:
-    """Print application title."""
     print(f"{COLOR_MENU}********** {APP_TITLE} **********{COLOR_RESET}\n")
 
 
 def print_menu() -> None:
-    """Print the menu UI with a cyan headline box per active user."""
     uname = ACTIVE_USER["name"] if ACTIVE_USER else "—"
     headline = f"-- {uname}s Menü --"
-
     inner_width = max(len(headline) + 2, 55)
     top = "┌" + "─" * inner_width + "┐"
     middle = "│" + headline.center(inner_width) + "│"
@@ -76,7 +70,7 @@ def print_menu() -> None:
     print(f"{COLOR_MENU}   3. List all movies{COLOR_RESET}")
     print(f"{COLOR_MENU}   4. Add a new movie{COLOR_RESET}")
     print(f"{COLOR_MENU}   5. Delete a movie{COLOR_RESET}")
-    print(f"{COLOR_MENU}   6. Update a movie (rating/year){COLOR_RESET}")
+    print(f"{COLOR_MENU}   6. Update movie (add/edit note){COLOR_RESET}")
     print(f"{COLOR_MENU}   7. Database Overview (Stats){COLOR_RESET}")
     print(f"{COLOR_MENU}   8. List a random movie{COLOR_RESET}")
     print(f"{COLOR_MENU}   9. Search for a movie{COLOR_RESET}")
@@ -86,13 +80,10 @@ def print_menu() -> None:
     print(f"{COLOR_MENU}   13. Switch user{COLOR_RESET}")
     print()
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Input Helpers
+# Input helpers
 # ──────────────────────────────────────────────────────────────────────────────
-
 def require_user() -> bool:
-    """Ensure a user is selected before executing actions."""
     if ACTIVE_USER is None:
         print(f"   {COLOR_ERROR}No user selected. Choose a user first.{COLOR_RESET}")
         return False
@@ -100,7 +91,6 @@ def require_user() -> bool:
 
 
 def input_nonempty_string(prompt: str) -> str:
-    """Prompt until a non-empty string is provided."""
     while True:
         value = input(prompt).strip()
         if value:
@@ -110,7 +100,6 @@ def input_nonempty_string(prompt: str) -> str:
 
 def input_float(prompt: str, min_val: float | None = None,
                 max_val: float | None = None) -> float:
-    """Prompt for a float with optional min/max bounds."""
     while True:
         try:
             value = float(input(prompt))
@@ -118,8 +107,8 @@ def input_float(prompt: str, min_val: float | None = None,
                 max_val is not None and value > max_val
             ):
                 print(
-                    f"   {COLOR_ERROR}Enter a number between "
-                    f"{min_val} and {max_val}.{COLOR_RESET}"
+                    f"   {COLOR_ERROR}Enter a number between {min_val} and "
+                    f"{max_val}.{COLOR_RESET}"
                 )
                 continue
             return value
@@ -129,7 +118,6 @@ def input_float(prompt: str, min_val: float | None = None,
 
 def input_int(prompt: str, min_val: int | None = None,
               max_val: int | None = None) -> int:
-    """Prompt for an int with optional min/max bounds."""
     while True:
         try:
             value = int(input(prompt))
@@ -137,8 +125,8 @@ def input_int(prompt: str, min_val: int | None = None,
                 max_val is not None and value > max_val
             ):
                 print(
-                    f"   {COLOR_ERROR}Enter an integer between "
-                    f"{min_val} and {max_val}.{COLOR_RESET}"
+                    f"   {COLOR_ERROR}Enter an integer between {min_val} and "
+                    f"{max_val}.{COLOR_RESET}"
                 )
                 continue
             return value
@@ -147,7 +135,6 @@ def input_int(prompt: str, min_val: int | None = None,
 
 
 def input_menu_choice(prompt: str, allowed: set[str]) -> str:
-    """Prompt until the user enters a choice contained in `allowed`."""
     while True:
         choice = input(prompt).strip()
         if choice in allowed:
@@ -157,18 +144,12 @@ def input_menu_choice(prompt: str, allowed: set[str]) -> str:
 
 
 def input_existing_title(prompt: str) -> str | None:
-    """
-    Prompt for a movie title existing for the active user.
-    Returns None if user cancels.
-    """
     if not require_user():
         return None
 
     movies = safe_list_movies()
     if not movies:
-        print(
-            f"   {COLOR_ERROR}No movies yet for {ACTIVE_USER['name']}.{COLOR_RESET}"
-        )
+        print(f"   {COLOR_ERROR}No movies yet for {ACTIVE_USER['name']}.{COLOR_RESET}")
         return None
 
     while True:
@@ -178,25 +159,22 @@ def input_existing_title(prompt: str) -> str | None:
         if title in movies:
             return title
         print(
-            f"   {COLOR_ERROR}Movie '{title}' not found for "
-            f"{ACTIVE_USER['name']}. Type 'cancel' to abort or try again."
-            f"{COLOR_RESET}"
+            f"   {COLOR_ERROR}Movie '{title}' not found for {ACTIVE_USER['name']}."
+            f" Type 'cancel' to abort or try again.{COLOR_RESET}"
         )
 
 
 def print_movie_line(idx: int, title: str, props: Dict[str, object]) -> None:
-    """Render a single movie line for console output."""
     rating = props.get("rating", "N/A")
     year = props.get("year", "N/A")
-    print(f"      {idx}. {title} ({year}): {rating}/10")
-
+    note = props.get("note")
+    note_part = f" | Note: {note}" if note else ""
+    print(f"      {idx}. {title} ({year}): {rating}/10{note_part}")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # User selection
 # ──────────────────────────────────────────────────────────────────────────────
-
 def choose_user() -> None:
-    """Select or create a user profile at app start."""
     global ACTIVE_USER
 
     users = storage.list_users()
@@ -230,33 +208,25 @@ def choose_user() -> None:
 
 
 def switch_user() -> None:
-    """Switch to a different user profile."""
     choose_user()
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Safe DB helpers (thin wrappers with error messages)
+# Safe DB helper
 # ──────────────────────────────────────────────────────────────────────────────
-
 def safe_list_movies() -> Dict[str, Dict[str, object]]:
-    """List movies for active user with error handling."""
     assert ACTIVE_USER is not None
     try:
         return storage.list_movies(ACTIVE_USER["id"])  # type: ignore[index]
-    except Exception as exc:  # pragma: no cover (interactive)
+    except Exception as exc:
         print(f"   {COLOR_ERROR}DB error while listing movies: {exc}{COLOR_RESET}")
         return {}
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Actions (all scoped to ACTIVE_USER)
+# Actions (scoped to ACTIVE_USER)
 # ──────────────────────────────────────────────────────────────────────────────
-
 def list_movies() -> None:
-    """List all movies for the active user."""
     if not require_user():
         return
-
     movies = safe_list_movies()
     if not movies:
         print(
@@ -272,10 +242,8 @@ def list_movies() -> None:
 
 
 def sort_by_rating() -> None:
-    """Show movies sorted by rating (desc)."""
     if not require_user():
         return
-
     movies = safe_list_movies()
     if not movies:
         print(f"   {COLOR_ERROR}No movies to sort.{COLOR_RESET}")
@@ -286,7 +254,6 @@ def sort_by_rating() -> None:
         key=lambda kv: (kv[1].get("rating", float("-inf")), kv[0]),
         reverse=True,
     )
-
     print(f"   {COLOR_OUTPUT}Movies sorted by rating:{COLOR_RESET}")
     for idx, (title, props) in enumerate(sorted_movies, 1):
         print(
@@ -297,10 +264,8 @@ def sort_by_rating() -> None:
 
 
 def sort_by_year() -> None:
-    """Show movies sorted by year (asc/desc, chosen by user)."""
     if not require_user():
         return
-
     movies = safe_list_movies()
     if not movies:
         print(f"   {COLOR_ERROR}No movies to sort.{COLOR_RESET}")
@@ -335,7 +300,6 @@ def sort_by_year() -> None:
 
 
 def _fetch_from_omdb(title_query: str) -> dict | None:
-    """Fetch a movie dict from OMDb by title, with robust error handling."""
     query = urllib.parse.urlencode({"t": title_query, "apikey": OMDB_API_KEY})
     url = f"{OMDB_BASE_URL}?{query}"
 
@@ -373,10 +337,8 @@ def _fetch_from_omdb(title_query: str) -> dict | None:
 
 
 def add_movie() -> None:
-    """Add a new movie: query OMDb, parse fields, persist for active user."""
     if not require_user():
         return
-
     title_input = input_nonempty_string(
         f"   {COLOR_INPUT}Enter movie title: {COLOR_RESET}"
     )
@@ -385,7 +347,6 @@ def add_movie() -> None:
     if not data:
         return
 
-    # Parse fields
     title = data.get("Title") or title_input
 
     year = None
@@ -401,7 +362,9 @@ def add_movie() -> None:
         except ValueError:
             rating = None
 
-    poster_url = data.get("Poster") if data.get("Poster") not in (None, "N/A") else None
+    poster_url = (
+        data.get("Poster") if data.get("Poster") not in (None, "N/A") else None
+    )
 
     if year is None or rating is None:
         print(
@@ -425,24 +388,20 @@ def add_movie() -> None:
         if poster_url:
             print(f"   {COLOR_OUTPUT}Poster: {poster_url}{COLOR_RESET}")
     except ValueError as exc:
-        # duplicate per user, etc.
         print(f"   {COLOR_ERROR}{exc}{COLOR_RESET}")
     except Exception as exc:
         print(f"   {COLOR_ERROR}DB error while saving movie: {exc}{COLOR_RESET}")
 
 
 def delete_movie() -> None:
-    """Delete a movie by title for the active user."""
     if not require_user():
         return
-
     title = input_existing_title(
         f"   {COLOR_INPUT}Enter movie title to delete (or 'cancel'): {COLOR_RESET}"
     )
     if title is None:
         print(f"   {COLOR_OUTPUT}Delete cancelled.{COLOR_RESET}")
         return
-
     try:
         storage.delete_movie(title, ACTIVE_USER["id"])  # type: ignore[index]
         print(
@@ -456,52 +415,24 @@ def delete_movie() -> None:
 
 
 def update_movie() -> None:
-    """
-    Keep UI as-is (per earlier requirement).
-    Update rating/year for a movie of the active user.
-    """
+    """Update = add/edit a NOTE for the user's movie."""
     if not require_user():
         return
 
     title = input_existing_title(
-        f"   {COLOR_INPUT}Enter movie title to update (or 'cancel'): {COLOR_RESET}"
+        f"   {COLOR_INPUT}Enter movie title to add a note (or 'cancel'): {COLOR_RESET}"
     )
     if title is None:
         print(f"   {COLOR_OUTPUT}Update cancelled.{COLOR_RESET}")
         return
 
-    print(f"   {COLOR_MENU}What do you want to update?{COLOR_RESET}")
-    print("   1. Rating")
-    print("   2. Year")
-    print("   3. Both")
-    choice = input_menu_choice(
-        f"   {COLOR_INPUT}Enter choice (1-3): {COLOR_RESET}", {"1", "2", "3"}
-    )
-
-    updates: Dict[str, object] = {}
-    if choice in {"1", "3"}:
-        updates["rating"] = input_float(
-            f"   {COLOR_INPUT}Enter new rating (0-10): {COLOR_RESET}", 0, 10
-        )
-    if choice in {"2", "3"}:
-        updates["year"] = input_int(
-            f"   {COLOR_INPUT}Enter new release year: {COLOR_RESET}", 1878, 2100
-        )
-
-    if not updates:
-        print(f"   {COLOR_OUTPUT}No changes applied.{COLOR_RESET}")
-        return
+    note = input_nonempty_string(f"   {COLOR_INPUT}Enter movie note: {COLOR_RESET}")
 
     try:
         storage.update_movie(
-            title=title,
-            user_id=ACTIVE_USER["id"],  # type: ignore[index]
-            **updates,
+            title=title, user_id=ACTIVE_USER["id"], note=note  # type: ignore[index]
         )
-        print(
-            f"   {COLOR_OUTPUT}Movie '{title}' updated for "
-            f"{ACTIVE_USER['name']}.{COLOR_RESET}"
-        )
+        print(f"   {COLOR_OUTPUT}Movie '{title}' successfully updated.{COLOR_RESET}")
     except KeyError as exc:
         print(f"   {COLOR_ERROR}{exc}{COLOR_RESET}")
     except Exception as exc:
@@ -509,10 +440,8 @@ def update_movie() -> None:
 
 
 def show_stats() -> None:
-    """Display average, median, best and worst rated movie for active user."""
     if not require_user():
         return
-
     movies = safe_list_movies()
     if not movies:
         print(f"   {COLOR_ERROR}No movies to analyze.{COLOR_RESET}")
@@ -545,10 +474,8 @@ def show_stats() -> None:
 
 
 def random_movie() -> None:
-    """Print a random movie for the active user."""
     if not require_user():
         return
-
     movies = safe_list_movies()
     if not movies:
         print(f"   {COLOR_ERROR}No movies available.{COLOR_RESET}")
@@ -557,16 +484,13 @@ def random_movie() -> None:
     title, props = random.choice(list(movies.items()))
     print(
         f"   {COLOR_OUTPUT}Random movie: {title} "
-        f"({props.get('year','N/A')}) — {props.get('rating','N/A')}/10"
-        f"{COLOR_RESET}"
+        f"({props.get('year','N/A')}) — {props.get('rating','N/A')}/10{COLOR_RESET}"
     )
 
 
 def search_movie() -> None:
-    """Search by substring and show close matches if no direct hits."""
     if not require_user():
         return
-
     movies = safe_list_movies()
     if not movies:
         print(f"   {COLOR_ERROR}No movies in database.{COLOR_RESET}")
@@ -606,10 +530,8 @@ def search_movie() -> None:
 
 
 def create_histogram() -> None:
-    """Create and save a histogram for ratings of active user's movies."""
     if not require_user():
         return
-
     movies = safe_list_movies()
     if not movies:
         print(f"   {COLOR_ERROR}No movies to analyze.{COLOR_RESET}")
@@ -638,10 +560,8 @@ def create_histogram() -> None:
 
 
 def filter_movies() -> None:
-    """Filter movies by min rating and optional year range."""
     if not require_user():
         return
-
     movies = safe_list_movies()
     if not movies:
         print(f"   {COLOR_ERROR}No movies available to filter.{COLOR_RESET}")
@@ -689,11 +609,9 @@ def filter_movies() -> None:
         )
     print()
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Website generation (per user; writes <username>.html)
 # ──────────────────────────────────────────────────────────────────────────────
-
 def generate_website() -> None:
     """
     Generate a static website for the active user.
@@ -701,6 +619,7 @@ def generate_website() -> None:
     Template: _static/index_template.html
     Output:   ./<username>.html
     CSS:      ensure ./style.css exists (copied from _static/style.css)
+    Hover:    show note via CSS tooltip (data-note on poster div)
     """
     if not require_user():
         return
@@ -709,7 +628,7 @@ def generate_website() -> None:
     project_dir = Path(__file__).parent
     static_dir = project_dir / "_static"
     template_path = static_dir / "index_template.html"
-    output_path = project_dir / f"{ACTIVE_USER['name']}.html"  # per-user output
+    output_path = project_dir / f"{ACTIVE_USER['name']}.html"
     css_src = static_dir / "style.css"
     css_dst = project_dir / "style.css"
 
@@ -719,11 +638,11 @@ def generate_website() -> None:
 
     try:
         template = template_path.read_text(encoding="utf-8")
-    except Exception as exc:  # pragma: no cover (I/O)
+    except Exception as exc:
         print(f"   {COLOR_ERROR}Failed to read template: {exc}{COLOR_RESET}")
         return
 
-    # Build the movie grid as <li> cards (poster, title, year)
+    # Build grid (note via data-note on .poster)
     grid_items: list[str] = []
     if movies:
         for title, props in movies.items():
@@ -732,42 +651,42 @@ def generate_website() -> None:
             safe_year = html.escape(str(year)) if year is not None else "N/A"
             poster_url = props.get("poster_url") or ""
             safe_poster = html.escape(poster_url) if poster_url else ""
+            note = props.get("note") or ""
+            safe_note = html.escape(str(note)) if note else ""
 
             grid_items.append(
                 (
                     '<li class="movie">\n'
-                    '  <div class="poster">\n'
+                    f'  <div class="poster" data-note="{safe_note}">\n'
                     f'    <img src="{safe_poster}" alt="{safe_title} poster" />\n'
                     "  </div>\n"
-                    f"  <div class=\"title\">{safe_title}</div>\n"
-                    f"  <div class=\"year\">{safe_year}</div>\n"
+                    f'  <div class="title">{safe_title}</div>\n'
+                    f'  <div class="year">{safe_year}</div>\n'
                     "</li>"
                 )
             )
     else:
         grid_items.append(
-            '<li class="movie empty">No movies yet. Add some and regenerate the '
-            "site.</li>"
+            '<li class="movie empty">No movies yet. Add some and regenerate the site.</li>'
         )
 
     grid_html = "\n".join(grid_items)
 
     html_out = (
-        template
-        .replace("__TEMPLATE_TITLE__", PAGE_TITLE)
+        template.replace("__TEMPLATE_TITLE__", PAGE_TITLE)
         .replace("__TEMPLATE_MOVIE_GRID__", grid_html)
     )
 
     try:
         output_path.write_text(html_out, encoding="utf-8")
-    except Exception as exc:  # pragma: no cover (I/O)
+    except Exception as exc:
         print(f"   {COLOR_ERROR}Failed to write output HTML: {exc}{COLOR_RESET}")
         return
 
     try:
         if css_src.exists():
             shutil.copyfile(css_src, css_dst)
-    except Exception as exc:  # pragma: no cover (I/O)
+    except Exception as exc:
         print(f"   {COLOR_ERROR}Could not copy style.css: {exc}{COLOR_RESET}")
 
     print(
@@ -776,15 +695,12 @@ def generate_website() -> None:
     )
     print(f"   {COLOR_OUTPUT}Open: {output_path}{COLOR_RESET}")
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Main Loop
+# Main
 # ──────────────────────────────────────────────────────────────────────────────
-
 def main() -> None:
-    """Entry point for the interactive CLI app."""
     print_title()
-    choose_user()  # pick or create a user before showing menu
+    choose_user()
 
     while True:
         print_menu()
@@ -807,7 +723,7 @@ def main() -> None:
         elif choice == "5":
             delete_movie()
         elif choice == "6":
-            update_movie()
+            update_movie()          # now: write/edit NOTE
         elif choice == "7":
             show_stats()
         elif choice == "8":

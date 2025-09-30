@@ -19,11 +19,12 @@ body {
   margin-top: 20px;
   display: flex;
   justify-content: center;
+  flex-wrap: wrap;     /* mehrere Zeilen erlauben */
+  gap: 24px 30px;      /* Abstände zwischen Karten */
 }
 
 .movie-grid li {
-  padding: 10px 15px;
-  text-align: center; /* mittig statt links */
+  text-align: center;  /* mittig statt links */
 }
 
 .movie {
@@ -31,10 +32,19 @@ body {
 }
 
 .poster img {
-  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.16),
-              0 3px 6px rgba(0, 0, 0, 0.23);
+  box-shadow:
+    0 3px 6px rgba(0, 0, 0, 0.16),
+    0 3px 6px rgba(0, 0, 0, 0.23);
   width: 128px;
-  height: 193px;
+  height: 193px;       /* konstante Postergröße */
+  object-fit: cover;   /* zuschneiden falls nötig, kein Verzerren */
+  display: block;
+}
+
+/* Tastatur-Fokus sichtbar machen */
+.poster:focus-within img {
+  outline: 3px solid #009B50;
+  outline-offset: 3px;
 }
 
 .title {
@@ -45,4 +55,56 @@ body {
 .year {
   font-size: 0.8em;
   color: #999;
+}
+
+/* Tooltip for movie notes on hover */
+.poster {
+  position: relative;
+  display: inline-block; /* keeps box to image size */
+}
+
+/* bubble */
+.poster::after {
+  content: attr(data-note);
+  position: absolute;
+  left: 50%;
+  bottom: -8px;                      /* start slightly behind image bottom */
+  transform: translate(-50%, 100%);  /* center + move below */
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  font-size: 0.8em;
+  line-height: 1.2;
+  padding: 8px 10px;
+  border-radius: 6px;
+  max-width: 220px;
+  white-space: normal;               /* wrap */
+  text-align: center;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+  z-index: 10;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;              /* ignore mouse */
+  transition: opacity 120ms ease, visibility 120ms ease;
+}
+
+/* little arrow */
+.poster::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -2px;
+  transform: translate(-50%, 0);
+  border: 6px solid transparent;
+  border-top-color: rgba(0, 0, 0, 0.85);
+  z-index: 11;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease, visibility 120ms ease;
+}
+
+/* show on hover ONLY if a non-empty note exists */
+.poster[data-note]:not([data-note=""]):hover::after,
+.poster[data-note]:not([data-note=""]):hover::before {
+  opacity: 1;
+  visibility: visible;
 }
