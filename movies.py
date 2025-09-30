@@ -1,17 +1,28 @@
+from __future__ import annotations
+
 import random
 import difflib
 import matplotlib.pyplot as plt
 import json
 import urllib.request, urllib.parse
+from urllib.error import URLError, HTTPError
+from pathlib import Path
+import html
+import shutil
+from typing import Dict, Optional
 
 import movie_storage_sql as storage  # persistence layer (SQLAlchemy)
 
 # ANSI color codes
 COLOR_RESET = "\033[0m"
 COLOR_ERROR = "\033[91m"
-COLOR_MENU = "\033[92m"
+COLOR_MENU = "\033[92m"     # grün – Menüoptionen
 COLOR_INPUT = "\033[0m"
-COLOR_OUTPUT = "\033[33m"
+COLOR_OUTPUT = "\033[33m"   # gelb – normale Ausgaben
+COLOR_HEADER = "\033[96m"   # CYAN – auffällige Überschriften
+
+# Active user state
+ACTIVE_USER: Optional[Dict] = None  # {"id": int, "name": str}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -22,25 +33,52 @@ def print_title():
 
 
 def print_menu():
-    print(f"   {COLOR_MENU}Menu:")
-    print("   0. Exit")
-    print("   1. Show all Movies sorted by rating")
-    print("   2. Show all Movies sorted by year (chronological)")
-    print("   3. List all movies")
-    print("   4. Add a new movie")
-    print("   5. Delete a movie")
-    print("   6. Update a movie (rating/year)")
-    print("   7. Database Overview (Stats)")
-    print("   8. List a random movie")
-    print("   9. Search for a movie")
-    print("   10. Create a Rating Histogram")
-    print("   11. Filter Movies" + COLOR_RESET)
+    uname = ACTIVE_USER["name"] if ACTIVE_USER else "—"
+
+    # Headline „-- Ronnys Menü --“ (deutsche Form ohne Apostroph)
+    headline = f"-- {uname}s Menü --"
+
+    # Box dynamisch breit machen
+    inner_width = max(len(headline) + 2, 55)
+    top    = "┌" + "─" * inner_width + "┐"
+    middle = "│" + headline.center(inner_width) + "│"
+    bottom = "└" + "─" * inner_width + "┘"
+
+    print()
+    print(f"{COLOR_HEADER}{top}{COLOR_RESET}")
+    print(f"{COLOR_HEADER}{middle}{COLOR_RESET}")
+    print(f"{COLOR_HEADER}{bottom}{COLOR_RESET}")
+
+    # Menüeinträge in GRÜN (klare Trennung zum Cyan-Header)
+    print(f"\n   {COLOR_MENU}Menu:{COLOR_RESET}")
+    print(f"{COLOR_MENU}   0. Exit{COLOR_RESET}")
+    print(f"{COLOR_MENU}   1. Show all Movies sorted by rating{COLOR_RESET}")
+    print(f"{COLOR_MENU}   2. Show all Movies sorted by year (chronological){COLOR_RESET}")
+    print(f"{COLOR_MENU}   3. List all movies{COLOR_RESET}")
+    print(f"{COLOR_MENU}   4. Add a new movie{COLOR_RESET}")
+    print(f"{COLOR_MENU}   5. Delete a movie{COLOR_RESET}")
+    print(f"{COLOR_MENU}   6. Update a movie (rating/year){COLOR_RESET}")
+    print(f"{COLOR_MENU}   7. Database Overview (Stats){COLOR_RESET}")
+    print(f"{COLOR_MENU}   8. List a random movie{COLOR_RESET}")
+    print(f"{COLOR_MENU}   9. Search for a movie{COLOR_RESET}")
+    print(f"{COLOR_MENU}   10. Create a Rating Histogram{COLOR_RESET}")
+    print(f"{COLOR_MENU}   11. Filter Movies{COLOR_RESET}")
+    print(f"{COLOR_MENU}   12. Generate website{COLOR_RESET}")
+    print(f"{COLOR_MENU}   13. Switch user{COLOR_RESET}")
     print()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Input Helpers
 # ──────────────────────────────────────────────────────────────────────────────
+def require_user() -> bool:
+    """Ensure a user is selected before executing actions."""
+    if ACTIVE_USER is None:
+        print(f"   {COLOR_ERROR}No user selected. Please choose a user first.{COLOR_RESET}")
+        return False
+    return True
+
+
 def input_nonempty_string(prompt: str) -> str:
     while True:
         value = input(prompt).strip()
@@ -84,14 +122,21 @@ def input_menu_choice(prompt: str, allowed: set[str]) -> str:
 
 
 def input_existing_title(prompt: str) -> str | None:
+    if not require_user():
+        return None
+    movies = storage.list_movies(ACTIVE_USER["id"])
+    if not movies:
+        print(f"   {COLOR_ERROR}No movies in database yet for {ACTIVE_USER['name']}.{COLOR_RESET}")
+        return None
+
     while True:
         title = input_nonempty_string(prompt)
         if title.lower() == "cancel":
             return None
-        movies = storage.list_movies()
+        movies = storage.list_movies(ACTIVE_USER["id"])
         if title in movies:
             return title
-        print(f"   {COLOR_ERROR}Movie '{title}' not found. Type 'cancel' to abort or try again.{COLOR_RESET}")
+        print(f"   {COLOR_ERROR}Movie '{title}' not found for {ACTIVE_USER['name']}. Type 'cancel' to abort or try again.{COLOR_RESET}")
 
 
 def print_movie_line(idx, title, props):
@@ -101,21 +146,77 @@ def print_movie_line(idx, title, props):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Actions
+# User selection
+# ──────────────────────────────────────────────────────────────────────────────
+def choose_user():
+    """Select or create a user profile at app start."""
+    global ACTIVE_USER
+
+    users = storage.list_users()
+    print("Welcome to the Movie App! 🎬\n")
+    if users:
+        print("Select a user:")
+        for i, (_, name) in enumerate(users, start=1):
+            print(f"{i}. {name}")
+        create_idx = len(users) + 1
+        print(f"{create_idx}. Create new user\n")
+
+        allowed = set(str(i) for i in range(1, create_idx + 1))
+        choice = input_menu_choice("Enter choice: ", allowed)
+
+        if int(choice) == create_idx:
+            name = input_nonempty_string("Enter new user name: ").strip()
+            uid, uname = storage.get_or_create_user(name)
+            ACTIVE_USER = {"id": uid, "name": uname}
+            print(f"\nWelcome, {uname}! 🎬\n")
+        else:
+            idx = int(choice) - 1
+            uid, uname = users[idx]
+            ACTIVE_USER = {"id": uid, "name": uname}
+            print(f"\nWelcome back, {uname}! 🎬\n")
+    else:
+        # No users yet
+        print("No users yet. Let's create one.")
+        name = input_nonempty_string("Enter new user name: ").strip()
+        uid, uname = storage.get_or_create_user(name)
+        ACTIVE_USER = {"id": uid, "name": uname}
+        print(f"\nWelcome, {uname}! 🎬\n")
+
+
+def switch_user():
+    choose_user()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Actions (all scoped to ACTIVE_USER)
 # ──────────────────────────────────────────────────────────────────────────────
 def list_movies():
-    movies = storage.list_movies()
+    if not require_user():
+        return
+    try:
+        movies = storage.list_movies(ACTIVE_USER["id"])
+    except Exception as e:
+        print(f"   {COLOR_ERROR}DB error while listing movies: {e}{COLOR_RESET}")
+        return
+
     if not movies:
-        print(f"   {COLOR_ERROR}No movies found.{COLOR_RESET}")
+        print(f"   {COLOR_OUTPUT}{ACTIVE_USER['name']}, your movie collection is empty. Add some movies!{COLOR_RESET}")
     else:
-        print(f"   {COLOR_OUTPUT}Movies:{COLOR_RESET}")
+        print(f"   {COLOR_OUTPUT}Movies for {ACTIVE_USER['name']}:{COLOR_RESET}")
         for idx, (title, props) in enumerate(movies.items(), 1):
             print_movie_line(idx, title, props)
         print(f"   {COLOR_OUTPUT}Total movies: {len(movies)}{COLOR_RESET}")
 
 
 def sort_by_rating():
-    movies = storage.list_movies()
+    if not require_user():
+        return
+    try:
+        movies = storage.list_movies(ACTIVE_USER["id"])
+    except Exception as e:
+        print(f"   {COLOR_ERROR}DB error while sorting by rating: {e}{COLOR_RESET}")
+        return
+
     if not movies:
         print(f"   {COLOR_ERROR}No movies to sort.{COLOR_RESET}")
         return
@@ -133,7 +234,14 @@ def sort_by_rating():
 
 
 def sort_by_year():
-    movies = storage.list_movies()
+    if not require_user():
+        return
+    try:
+        movies = storage.list_movies(ACTIVE_USER["id"])
+    except Exception as e:
+        print(f"   {COLOR_ERROR}DB error while sorting by year: {e}{COLOR_RESET}")
+        return
+
     if not movies:
         print(f"   {COLOR_ERROR}No movies to sort.{COLOR_RESET}")
         return
@@ -165,6 +273,8 @@ def sort_by_year():
 
 
 def add_movie():
+    if not require_user():
+        return
     title_input = input_nonempty_string(f"   {COLOR_INPUT}Enter movie title: {COLOR_RESET}")
 
     # Fetch from OMDb
@@ -173,14 +283,32 @@ def add_movie():
     url = f"http://www.omdbapi.com/?{query}"
 
     try:
-        with urllib.request.urlopen(url) as resp:
-            data = json.loads(resp.read().decode())
+        with urllib.request.urlopen(url, timeout=8) as resp:
+            if resp.status != 200:
+                print(f"   {COLOR_ERROR}OMDb HTTP error: {resp.status}{COLOR_RESET}")
+                return
+            raw = resp.read()
+        try:
+            data = json.loads(raw.decode())
+        except json.JSONDecodeError:
+            print(f"   {COLOR_ERROR}OMDb returned invalid JSON.{COLOR_RESET}")
+            return
+    except HTTPError as e:
+        print(f"   {COLOR_ERROR}OMDb HTTP error: {e.code} {e.reason}{COLOR_RESET}")
+        return
+    except URLError as e:
+        print(f"   {COLOR_ERROR}Network error reaching OMDb: {e.reason}{COLOR_RESET}")
+        return
+    except TimeoutError:
+        print(f"   {COLOR_ERROR}OMDb request timed out.{COLOR_RESET}")
+        return
     except Exception as e:
-        print(f"   {COLOR_ERROR}Failed to reach OMDb: {e}{COLOR_RESET}")
+        print(f"   {COLOR_ERROR}Unexpected error contacting OMDb: {e}{COLOR_RESET}")
         return
 
     if data.get("Response") != "True":
-        print(f"   {COLOR_ERROR}OMDb error: {data.get('Error', 'Unknown error')}{COLOR_RESET}")
+        err_msg = data.get("Error", "Unknown error")
+        print(f"   {COLOR_ERROR}OMDb error: {err_msg}{COLOR_RESET}")
         return
 
     # Parse fields
@@ -188,7 +316,7 @@ def add_movie():
 
     year_str = data.get("Year", "")
     year = None
-    if year_str and year_str[:4].isdigit():  # handles ranges like "1999–2003"
+    if year_str and year_str[:4].isdigit():
         year = int(year_str[:4])
 
     rating = None
@@ -205,23 +333,21 @@ def add_movie():
         print(f"   {COLOR_ERROR}Could not parse year/rating from OMDb for '{title}'.{COLOR_RESET}")
         return
 
-    # Prevent obvious duplicates by title (optional UX nicety)
-    existing = storage.list_movies()
-    if title in existing:
-        print(f"   {COLOR_ERROR}Movie '{title}' already exists in your database.{COLOR_RESET}")
-        return
-
-    # Save to DB
+    # Save to DB (per-user uniqueness enforced im Storage)
     try:
-        storage.add_movie(title, year, rating, poster_url)
-        print(f"   {COLOR_OUTPUT}Movie '{title}' ({year}) added with rating {rating:.1f}.{COLOR_RESET}")
+        storage.add_movie(title, year, rating, poster_url, ACTIVE_USER["id"])
+        print(f"   {COLOR_OUTPUT}Movie '{title}' added to {ACTIVE_USER['name']}'s collection!{COLOR_RESET}")
         if poster_url:
             print(f"   {COLOR_OUTPUT}Poster: {poster_url}{COLOR_RESET}")
-    except Exception as e:
+    except ValueError as e:
         print(f"   {COLOR_ERROR}{e}{COLOR_RESET}")
+    except Exception as e:
+        print(f"   {COLOR_ERROR}DB error while saving movie: {e}{COLOR_RESET}")
 
 
 def delete_movie():
+    if not require_user():
+        return
     title = input_existing_title(
         f"   {COLOR_INPUT}Enter movie title to delete (or type 'cancel'): {COLOR_RESET}"
     )
@@ -229,13 +355,19 @@ def delete_movie():
         print(f"   {COLOR_OUTPUT}Delete cancelled.{COLOR_RESET}")
         return
     try:
-        storage.delete_movie(title)
-        print(f"   {COLOR_OUTPUT}Movie '{title}' deleted.{COLOR_RESET}")
+        storage.delete_movie(title, ACTIVE_USER["id"])
+        print(f"   {COLOR_OUTPUT}Movie '{title}' deleted from {ACTIVE_USER['name']}'s collection.{COLOR_RESET}")
     except KeyError as e:
         print(f"   {COLOR_ERROR}{e}{COLOR_RESET}")
+    except Exception as e:
+        print(f"   {COLOR_ERROR}DB error while deleting movie: {e}{COLOR_RESET}")
 
 
 def update_movie():
+    # wie besprochen: UI beibehalten; intern nach user_id updaten
+    if not require_user():
+        return
+
     title = input_existing_title(
         f"   {COLOR_INPUT}Enter movie title to update (or type 'cancel'): {COLOR_RESET}"
     )
@@ -258,16 +390,25 @@ def update_movie():
 
     if updates:
         try:
-            storage.update_movie(title, **updates)
-            print(f"   {COLOR_OUTPUT}Movie '{title}' updated.{COLOR_RESET}")
+            storage.update_movie(title, user_id=ACTIVE_USER["id"], **updates)
+            print(f"   {COLOR_OUTPUT}Movie '{title}' updated for {ACTIVE_USER['name']}.{COLOR_RESET}")
         except KeyError as e:
             print(f"   {COLOR_ERROR}{e}{COLOR_RESET}")
+        except Exception as e:
+            print(f"   {COLOR_ERROR}DB error while updating movie: {e}{COLOR_RESET}")
     else:
         print(f"   {COLOR_OUTPUT}No changes applied.{COLOR_RESET}")
 
 
 def show_stats():
-    movies = storage.list_movies()
+    if not require_user():
+        return
+    try:
+        movies = storage.list_movies(ACTIVE_USER["id"])
+    except Exception as e:
+        print(f"   {COLOR_ERROR}DB error while computing stats: {e}{COLOR_RESET}")
+        return
+
     if not movies:
         print(f"   {COLOR_ERROR}No movies to analyze.{COLOR_RESET}")
         return
@@ -283,10 +424,9 @@ def show_stats():
     median = ratings[n // 2] if n % 2 == 1 else (ratings[n // 2 - 1] + ratings[n // 2]) / 2
     max_rating = max(ratings)
     min_rating = min(ratings)
-    best = [t for t, p in storage.list_movies().items() if p.get("rating") == max_rating]
-    worst = [t for t, p in storage.list_movies().items() if p.get("rating") == min_rating]
+    best = [t for t, p in movies.items() if p.get("rating") == max_rating]
+    worst = [t for t, p in movies.items() if p.get("rating") == min_rating]
 
-    # → Average & Median mit nur 1 Nachkommastelle
     print(
         f"   {COLOR_OUTPUT}Average: {avg:.1f} | Median: {median:.1f} | "
         f"Best: {', '.join(best)} | Worst: {', '.join(worst)}{COLOR_RESET}"
@@ -294,7 +434,14 @@ def show_stats():
 
 
 def random_movie():
-    movies = storage.list_movies()
+    if not require_user():
+        return
+    try:
+        movies = storage.list_movies(ACTIVE_USER["id"])
+    except Exception as e:
+        print(f"   {COLOR_ERROR}DB error while picking random movie: {e}{COLOR_RESET}")
+        return
+
     if movies:
         title, props = random.choice(list(movies.items()))
         print(
@@ -306,7 +453,14 @@ def random_movie():
 
 
 def search_movie():
-    movies = storage.list_movies()
+    if not require_user():
+        return
+    try:
+        movies = storage.list_movies(ACTIVE_USER["id"])
+    except Exception as e:
+        print(f"   {COLOR_ERROR}DB error while searching: {e}{COLOR_RESET}")
+        return
+
     if not movies:
         print(f"   {COLOR_ERROR}No movies in database.{COLOR_RESET}")
         return
@@ -342,7 +496,14 @@ def search_movie():
 
 
 def create_histogram():
-    movies = storage.list_movies()
+    if not require_user():
+        return
+    try:
+        movies = storage.list_movies(ACTIVE_USER["id"])
+    except Exception as e:
+        print(f"   {COLOR_ERROR}DB error while creating histogram: {e}{COLOR_RESET}")
+        return
+
     if not movies:
         print(f"   {COLOR_ERROR}No movies to analyze.{COLOR_RESET}")
         return
@@ -366,7 +527,14 @@ def create_histogram():
 
 
 def filter_movies():
-    movies = storage.list_movies()
+    if not require_user():
+        return
+    try:
+        movies = storage.list_movies(ACTIVE_USER["id"])
+    except Exception as e:
+        print(f"   {COLOR_ERROR}DB error while filtering: {e}{COLOR_RESET}")
+        return
+
     if not movies:
         print(f"   {COLOR_ERROR}No movies available to filter.{COLOR_RESET}")
         return
@@ -397,10 +565,89 @@ def filter_movies():
         print(f"   {COLOR_ERROR}No movies matched the given criteria.{COLOR_RESET}")
         return
 
-    print(f"   {COLOR_OUTPUT}Filtered Movies:{COLOR_RESET}")
+    print(f"   {COLOR_OUTPUT}Filtered Movies for {ACTIVE_USER['name']}:{COLOR_RESET}")
     for idx, (title, props) in enumerate(filtered, 1):
         print(f"   {idx}. {title} ({props.get('year','N/A')}): {props.get('rating','N/A')}/10")
     print()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Website generation (per user; writes <username>.html)
+# ──────────────────────────────────────────────────────────────────────────────
+def generate_website():
+    """Generate a static website for the active user.
+    Template: _static/index_template.html
+    Output:   ./<username>.html
+    CSS:      ensure ./style.css exists (copied from _static/style.css)
+    """
+    if not require_user():
+        return
+    try:
+        movies = storage.list_movies(ACTIVE_USER["id"])
+    except Exception as e:
+        print(f"   {COLOR_ERROR}DB error while generating website: {e}{COLOR_RESET}")
+        return
+
+    project_dir = Path(__file__).parent
+    static_dir = project_dir / "_static"
+    template_path = static_dir / "index_template.html"
+    output_path = project_dir / f"{ACTIVE_USER['name']}.html"  # per-user output
+    css_src = static_dir / "style.css"
+    css_dst = project_dir / "style.css"
+
+    if not template_path.exists():
+        print(f"   {COLOR_ERROR}Template not found: {template_path}{COLOR_RESET}")
+        return
+
+    try:
+        template = template_path.read_text(encoding="utf-8")
+    except Exception as e:
+        print(f"   {COLOR_ERROR}Failed to read template: {e}{COLOR_RESET}")
+        return
+
+    # Build the movie grid as <li> cards (poster, title, year)
+    grid_items = []
+    if movies:
+        for title, props in movies.items():
+            safe_title = html.escape(str(title))
+            year = props.get("year")
+            safe_year = html.escape(str(year)) if year is not None else "N/A"
+            poster_url = props.get("poster_url") or ""
+            safe_poster = html.escape(poster_url) if poster_url else ""
+
+            grid_items.append(f"""
+<li class="movie">
+  <div class="poster">
+    <img src="{safe_poster}" alt="{safe_title} poster" />
+  </div>
+  <div class="title">{safe_title}</div>
+  <div class="year">{safe_year}</div>
+</li>""".strip())
+    else:
+        grid_items.append('<li class="movie empty">No movies yet. Add some and regenerate the site.</li>')
+
+    grid_html = "\n".join(grid_items)
+
+    html_out = (
+        template
+        .replace("__TEMPLATE_TITLE__", "My Movie App")
+        .replace("__TEMPLATE_MOVIE_GRID__", grid_html)
+    )
+
+    try:
+        output_path.write_text(html_out, encoding="utf-8")
+    except Exception as e:
+        print(f"   {COLOR_ERROR}Failed to write output HTML: {e}{COLOR_RESET}")
+        return
+
+    try:
+        if css_src.exists():
+            shutil.copyfile(css_src, css_dst)
+    except Exception as e:
+        print(f"   {COLOR_ERROR}Could not copy style.css: {e}{COLOR_RESET}")
+
+    print(f"   {COLOR_OUTPUT}Website was generated successfully for {ACTIVE_USER['name']}.{COLOR_RESET}")
+    print(f"   {COLOR_OUTPUT}Open: {output_path}{COLOR_RESET}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -408,10 +655,12 @@ def filter_movies():
 # ──────────────────────────────────────────────────────────────────────────────
 def main():
     print_title()
+    choose_user()  # pick or create a user before showing menu
+
     while True:
         print_menu()
         choice = input_menu_choice(
-            f"   {COLOR_INPUT}Enter choice (0-11): {COLOR_RESET}", set(str(i) for i in range(12))
+            f"   {COLOR_INPUT}Enter choice (0-13): {COLOR_RESET}", set(str(i) for i in range(14))
         )
         print()
         if choice == "0":
@@ -439,6 +688,10 @@ def main():
             create_histogram()
         elif choice == "11":
             filter_movies()
+        elif choice == "12":
+            generate_website()
+        elif choice == "13":
+            switch_user()
         print()
 
 
