@@ -4,6 +4,8 @@ from __future__ import annotations
 CLI Movie App with user profiles, OMDb integration, SQLite/SQLAlchemy storage,
 and static website generation per user.
 Update feature: adds/edits a free-text NOTE per movie.
+Poster is clickable and opens IMDb.
+'Add a new movie' now supports adding multiple movies in one go (type 'done' to stop).
 """
 
 from pathlib import Path
@@ -143,6 +145,15 @@ def input_menu_choice(prompt: str, allowed: set[str]) -> str:
         print(f"   {COLOR_ERROR}Invalid choice. Allowed: {opts}.{COLOR_RESET}")
 
 
+def safe_list_movies() -> Dict[str, Dict[str, object]]:
+    assert ACTIVE_USER is not None
+    try:
+        return storage.list_movies(ACTIVE_USER["id"])  # type: ignore[index]
+    except Exception as exc:
+        print(f"   {COLOR_ERROR}DB error while listing movies: {exc}{COLOR_RESET}")
+        return {}
+
+
 def input_existing_title(prompt: str) -> str | None:
     if not require_user():
         return None
@@ -209,17 +220,6 @@ def choose_user() -> None:
 
 def switch_user() -> None:
     choose_user()
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Safe DB helper
-# ──────────────────────────────────────────────────────────────────────────────
-def safe_list_movies() -> Dict[str, Dict[str, object]]:
-    assert ACTIVE_USER is not None
-    try:
-        return storage.list_movies(ACTIVE_USER["id"])  # type: ignore[index]
-    except Exception as exc:
-        print(f"   {COLOR_ERROR}DB error while listing movies: {exc}{COLOR_RESET}")
-        return {}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Actions (scoped to ACTIVE_USER)
@@ -337,60 +337,87 @@ def _fetch_from_omdb(title_query: str) -> dict | None:
 
 
 def add_movie() -> None:
+    """
+    Add multiple movies in one go.
+    Type 'done' (or 'cancel') as title to return to the main menu.
+    """
     if not require_user():
         return
-    title_input = input_nonempty_string(
-        f"   {COLOR_INPUT}Enter movie title: {COLOR_RESET}"
+
+    print(
+        f"   {COLOR_MENU}Add mode:{COLOR_RESET} "
+        f"enter movie titles one by one. Type '{COLOR_OUTPUT}done{COLOR_RESET}' to finish."
     )
 
-    data = _fetch_from_omdb(title_input)
-    if not data:
-        return
+    while True:
+        raw = input(f"   {COLOR_INPUT}Enter movie title (or 'done'): {COLOR_RESET}").strip()
+        if not raw:
+            print(f"   {COLOR_ERROR}Title cannot be empty.{COLOR_RESET}")
+            continue
+        if raw.lower() in {"done", "cancel", "exit", "quit"}:
+            print(f"   {COLOR_OUTPUT}Finished adding movies.{COLOR_RESET}")
+            break
 
-    title = data.get("Title") or title_input
+        title_input = raw
 
-    year = None
-    year_str = data.get("Year", "")
-    if year_str and year_str[:4].isdigit():
-        year = int(year_str[:4])
+        data = _fetch_from_omdb(title_input)
+        if not data:
+            # keep looping so the user can try another title
+            continue
 
-    rating = None
-    rating_str = data.get("imdbRating")
-    if rating_str and rating_str != "N/A":
+        title = data.get("Title") or title_input
+
+        # Year parsing (handles ranges like "1999–2003")
+        year = None
+        year_str = data.get("Year", "")
+        if year_str and year_str[:4].isdigit():
+            year = int(year_str[:4])
+
+        # Rating parsing
+        rating = None
+        rating_str = data.get("imdbRating")
+        if rating_str and rating_str != "N/A":
+            try:
+                rating = float(rating_str)
+            except ValueError:
+                rating = None
+
+        poster_url = data.get("Poster") if data.get("Poster") not in (None, "N/A") else None
+        imdb_id = data.get("imdbID") or None
+
+        if year is None or rating is None:
+            print(
+                f"   {COLOR_ERROR}Could not parse year/rating from OMDb for "
+                f"'{title}'. Skipping.{COLOR_RESET}"
+            )
+            continue
+
         try:
-            rating = float(rating_str)
-        except ValueError:
-            rating = None
+            storage.add_movie(
+                title=title,
+                year=year,
+                rating=rating,
+                poster_url=poster_url,
+                user_id=ACTIVE_USER["id"],  # type: ignore[index]
+                imdb_id=imdb_id,
+            )
+            print(
+                f"   {COLOR_OUTPUT}Movie '{title}' added to "
+                f"{ACTIVE_USER['name']}'s collection!{COLOR_RESET}"
+            )
+            if poster_url:
+                print(f"   {COLOR_OUTPUT}Poster: {poster_url}{COLOR_RESET}")
+            if imdb_id:
+                print(
+                    f"   {COLOR_OUTPUT}IMDb: https://www.imdb.com/title/{imdb_id}/{COLOR_RESET}"
+                )
+        except ValueError as exc:
+            # duplicate for this user
+            print(f"   {COLOR_ERROR}{exc}{COLOR_RESET}")
+        except Exception as exc:
+            print(f"   {COLOR_ERROR}DB error while saving movie: {exc}{COLOR_RESET}")
 
-    poster_url = (
-        data.get("Poster") if data.get("Poster") not in (None, "N/A") else None
-    )
-
-    if year is None or rating is None:
-        print(
-            f"   {COLOR_ERROR}Could not parse year/rating from OMDb for "
-            f"'{title}'.{COLOR_RESET}"
-        )
-        return
-
-    try:
-        storage.add_movie(
-            title=title,
-            year=year,
-            rating=rating,
-            poster_url=poster_url,
-            user_id=ACTIVE_USER["id"],  # type: ignore[index]
-        )
-        print(
-            f"   {COLOR_OUTPUT}Movie '{title}' added to "
-            f"{ACTIVE_USER['name']}'s collection!{COLOR_RESET}"
-        )
-        if poster_url:
-            print(f"   {COLOR_OUTPUT}Poster: {poster_url}{COLOR_RESET}")
-    except ValueError as exc:
-        print(f"   {COLOR_ERROR}{exc}{COLOR_RESET}")
-    except Exception as exc:
-        print(f"   {COLOR_ERROR}DB error while saving movie: {exc}{COLOR_RESET}")
+    # end while
 
 
 def delete_movie() -> None:
@@ -560,8 +587,10 @@ def create_histogram() -> None:
 
 
 def filter_movies() -> None:
+    """Interactive filter: by min rating and optional year range."""
     if not require_user():
         return
+
     movies = safe_list_movies()
     if not movies:
         print(f"   {COLOR_ERROR}No movies available to filter.{COLOR_RESET}")
@@ -619,7 +648,8 @@ def generate_website() -> None:
     Template: _static/index_template.html
     Output:   ./<username>.html
     CSS:      ensure ./style.css exists (copied from _static/style.css)
-    Hover:    show note via CSS tooltip (data-note on poster div)
+    Hover:    show note via CSS tooltip (data-note on poster element)
+    Click:    poster links to IMDb if imdb_id exists
     """
     if not require_user():
         return
@@ -642,7 +672,7 @@ def generate_website() -> None:
         print(f"   {COLOR_ERROR}Failed to read template: {exc}{COLOR_RESET}")
         return
 
-    # Build grid (note via data-note on .poster)
+    # Build grid (NOTE via data-note; rating badge; poster is a link to IMDb)
     grid_items: list[str] = []
     if movies:
         for title, props in movies.items():
@@ -653,13 +683,20 @@ def generate_website() -> None:
             safe_poster = html.escape(poster_url) if poster_url else ""
             note = props.get("note") or ""
             safe_note = html.escape(str(note)) if note else ""
+            rating = props.get("rating")
+            rating_txt = f"{float(rating):.1f}" if isinstance(rating, (int, float)) else "–"
+            imdb_id = props.get("imdb_id") or ""
+            imdb_url = f"https://www.imdb.com/title/{html.escape(imdb_id)}/" if imdb_id else "#"
 
+            # Use <a class="poster"> to keep tooltip styles and make it clickable
             grid_items.append(
                 (
                     '<li class="movie">\n'
-                    f'  <div class="poster" data-note="{safe_note}">\n'
+                    f'  <a class="poster" data-note="{safe_note}" href="{imdb_url}" '
+                    'target="_blank" rel="noopener noreferrer">\n'
+                    f'    <span class="rating-badge">{rating_txt}</span>\n'
                     f'    <img src="{safe_poster}" alt="{safe_title} poster" />\n'
-                    "  </div>\n"
+                    "  </a>\n"
                     f'  <div class="title">{safe_title}</div>\n'
                     f'  <div class="year">{safe_year}</div>\n'
                     "</li>"
@@ -719,11 +756,11 @@ def main() -> None:
         elif choice == "3":
             list_movies()
         elif choice == "4":
-            add_movie()
+            add_movie()             # now loops until 'done'
         elif choice == "5":
             delete_movie()
         elif choice == "6":
-            update_movie()          # now: write/edit NOTE
+            update_movie()          # write/edit NOTE
         elif choice == "7":
             show_stats()
         elif choice == "8":

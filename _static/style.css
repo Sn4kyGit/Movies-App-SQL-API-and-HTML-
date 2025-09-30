@@ -31,14 +31,37 @@ body {
   width: 140px;
 }
 
+.poster {
+  position: relative;   /* for badge & tooltip */
+  display: inline-block;
+}
+
 .poster img {
   box-shadow:
     0 3px 6px rgba(0, 0, 0, 0.16),
     0 3px 6px rgba(0, 0, 0, 0.23);
   width: 128px;
-  height: 193px;       /* konstante Postergröße */
-  object-fit: cover;   /* zuschneiden falls nötig, kein Verzerren */
+  height: 193px;        /* konstante Postergröße */
+  object-fit: cover;    /* zuschneiden falls nötig, kein Verzerren */
   display: block;
+}
+
+/* Rating badge (top-left) */
+.rating-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  min-width: 34px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.8);
+  color: #ffd54f;          /* dezentes goldgelb */
+  font-weight: bold;
+  font-size: 0.85em;
+  line-height: 22px;
+  text-align: center;
+  backdrop-filter: blur(2px);
 }
 
 /* Tastatur-Fokus sichtbar machen */
@@ -58,12 +81,6 @@ body {
 }
 
 /* Tooltip for movie notes on hover */
-.poster {
-  position: relative;
-  display: inline-block; /* keeps box to image size */
-}
-
-/* bubble */
 .poster::after {
   content: attr(data-note);
   position: absolute;
@@ -87,7 +104,6 @@ body {
   transition: opacity 120ms ease, visibility 120ms ease;
 }
 
-/* little arrow */
 .poster::before {
   content: "";
   position: absolute;
@@ -102,7 +118,7 @@ body {
   transition: opacity 120ms ease, visibility 120ms ease;
 }
 
-/* show on hover ONLY if a non-empty note exists */
+/* show tooltip only if note is non-empty */
 .poster[data-note]:not([data-note=""]):hover::after,
 .poster[data-note]:not([data-note=""]):hover::before {
   opacity: 1;
